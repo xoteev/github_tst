@@ -20,4 +20,5 @@
     <string name="label_author">Author:</string>
     <string name="label_sha">Sha:</string>
     <string name="label_comment">Comment:</string>
+    <string name="action_logout">logout</string>
 </resources>

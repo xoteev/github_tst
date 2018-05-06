@@ -3,15 +3,18 @@ package com.xoteev.githubtest;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.TargetApi;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
 import android.support.v7.app.AppCompatActivity;
 import android.text.TextUtils;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
@@ -21,10 +24,13 @@ import android.widget.Toast;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.xoteev.githubtest.githubapi.GithubAPI;
+import com.xoteev.githubtest.githubapi.GithubAuth;
+import com.xoteev.githubtest.githubapi.GithubAuthDeserializer;
 import com.xoteev.githubtest.githubapi.GithubRepoDeserializer;
 import com.xoteev.githubtest.githubapi.GithubRepos;
+import com.xoteev.githubtest.util.LoginParam;
+import com.xoteev.githubtest.util.PrefUtilis;
 
-import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 
@@ -32,10 +38,7 @@ import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.CompositeDisposable;
 import io.reactivex.observers.DisposableSingleObserver;
 import io.reactivex.schedulers.Schedulers;
-import okhttp3.Credentials;
-import okhttp3.Interceptor;
 import okhttp3.OkHttpClient;
-import okhttp3.Request;
 import retrofit2.Retrofit;
 import retrofit2.adapter.rxjava2.RxJava2CallAdapterFactory;
 import retrofit2.converter.gson.GsonConverterFactory;
@@ -43,14 +46,14 @@ import retrofit2.converter.gson.GsonConverterFactory;
 
 public class LoginActivity extends AppCompatActivity {
 
-    private GlobalData globalData;
-
-    private GithubAPI githubAPI;
+    private GithubAPI mGithubAPI;
 
     private AutoCompleteTextView mUserNameView;
     private EditText mPasswordView;
     private View mProgressView;
     private View mLoginFormView;
+    private Button mSignInButton;
+
 
     private CompositeDisposable compositeDisposable = new CompositeDisposable();
 
@@ -58,8 +61,6 @@ public class LoginActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_login);
-
-        globalData = (GlobalData) getApplication();
 
         mUserNameView = (AutoCompleteTextView) findViewById(R.id.userName);
         mPasswordView = (EditText) findViewById(R.id.password);
@@ -74,7 +75,7 @@ public class LoginActivity extends AppCompatActivity {
             }
         });
 
-        Button mSignInButton = (Button) findViewById(R.id.sign_in_button);
+        mSignInButton = (Button) findViewById(R.id.sign_in_button);
         mSignInButton.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View view) {
@@ -84,9 +85,6 @@ public class LoginActivity extends AppCompatActivity {
 
         mLoginFormView = findViewById(R.id.login_form);
         mProgressView = findViewById(R.id.login_progress);
-
-        // инициализируем апи
-        createGithubAPI();
     }
 
     @Override
@@ -95,30 +93,28 @@ public class LoginActivity extends AppCompatActivity {
         if (compositeDisposable != null && !compositeDisposable.isDisposed()) {
             compositeDisposable.dispose();
         }
+        showProgress(false);
     }
 
-    private void createGithubAPI() {
-        // в LoginActivity используется только GithubRepoDeserializer
-        // обработка коммитов и остальные данные заполняются после выбора репозитория
-        Gson gson = new GsonBuilder()
-                .setDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
-                .registerTypeAdapter(GithubRepos.class, new GithubRepoDeserializer())
-                .create();
+    private void createGithubAPI(GithubAPI.RequestType type) {
 
-        OkHttpClient okHttpClient = new OkHttpClient.Builder()
-                .addInterceptor(new Interceptor() {
-                    @Override
-                    public okhttp3.Response intercept(Chain chain) throws IOException {
-                        Request originalRequest = chain.request();
+        Gson gson = null;
+        switch (type) {
+            case reqLogin:
+                gson = new GsonBuilder()
+                        .setDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
+                        .registerTypeAdapter(GithubAuth.class, new GithubAuthDeserializer())
+                        .create();
+                break;
+            case reqRepo:
+                gson = new GsonBuilder()
+                        .setDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
+                        .registerTypeAdapter(GithubRepos.class, new GithubRepoDeserializer())
+                        .create();
+                break;
+        }
 
-                        Request.Builder builder = originalRequest.newBuilder().header("Authorization",
-                                Credentials.basic(globalData.getUserName(), globalData.getPassword()));
-                        //Credentials.basic(mUserNameView.getText().toString(), mPasswordView.getText().toString()));
-
-                        Request newRequest = builder.build();
-                        return chain.proceed(newRequest);
-                    }
-                }).build();
+        OkHttpClient okHttpClient = new OkHttpClient();
 
         Retrofit retrofit = new Retrofit.Builder()
                 .baseUrl(GithubAPI.ENDPOINT)
@@ -127,10 +123,15 @@ public class LoginActivity extends AppCompatActivity {
                 .addConverterFactory(GsonConverterFactory.create(gson))
                 .build();
 
-        githubAPI = retrofit.create(GithubAPI.class);
+        mGithubAPI = retrofit.create(GithubAPI.class);
     }
 
     private void attemptLogin() {
+
+        if(!PrefUtilis.isNetworkAvailable(LoginActivity.this)) {
+            Toast.makeText(LoginActivity.this, "Ошибка соединения. Проверьте настройки сети.", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         mUserNameView.setError(null);
         mPasswordView.setError(null);
@@ -159,28 +160,52 @@ public class LoginActivity extends AppCompatActivity {
 
         if (cancel) {
             focusView.requestFocus();
-        } else {
-            showProgress(true);
-
-            // запоминаем учетные данные пользователя
-            globalData.setUserName(mUserNameView.getText().toString());
-            globalData.setPassword(mPasswordView.getText().toString());
-
-            // проверки прошли, пробуем подключится к серверу для получения списка репозиториев
-            compositeDisposable.add(githubAPI.getRepos()
-                    .subscribeOn(Schedulers.io())
-                    .observeOn(AndroidSchedulers.mainThread())
-                    .subscribeWith(getRepositoriesObserver()));
         }
+
+        if (mSignInButton != null) {
+            InputMethodManager imm = (InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE);
+            imm.hideSoftInputFromWindow(mSignInButton.getWindowToken(), 0);
+        }
+
+        getLogin();
     }
 
     private boolean isUserNameValid(String email) {
         // проверим что пользователь что то ввел
-        return email.length() > 0;
+        return !email.isEmpty();
     }
 
     private boolean isPasswordValid(String password) {
-        return password.length() > 0;
+        return !password.isEmpty();
+    }
+
+    private void getLogin() {
+        // пробуем авторизоваться
+        showProgress(true);
+
+        createGithubAPI(GithubAPI.RequestType.reqLogin);
+
+        String credential = mUserNameView.getText().toString() + ":" + mPasswordView.getText().toString();
+        String authorization = "Basic " + Base64.encodeToString(credential.getBytes(), Base64.NO_WRAP);
+        LoginParam loginParam = new LoginParam(GithubAPI.CLIENT_SECRET, "GithubTest app");
+        compositeDisposable.add(mGithubAPI.basicLogin(authorization, GithubAPI.CLIENT_ID, loginParam)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribeWith(getLoginObserver()));
+    }
+
+    private void getRepo() {
+        // запрашиваем список репозиториев
+        showProgress(true);
+
+        createGithubAPI(GithubAPI.RequestType.reqRepo);
+
+        final String oAuthToken = "token " + PrefUtilis.getOAuthToken(LoginActivity.this);
+        createGithubAPI(GithubAPI.RequestType.reqRepo);
+        compositeDisposable.add(mGithubAPI.getRepos(oAuthToken)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribeWith(getRepositoriesObserver()));
     }
 
     @TargetApi(Build.VERSION_CODES.HONEYCOMB_MR2)
@@ -216,31 +241,46 @@ public class LoginActivity extends AppCompatActivity {
         }
     }
 
-    private DisposableSingleObserver<List<GithubRepos>> getRepositoriesObserver() {
-        return new DisposableSingleObserver<List<GithubRepos>>() {
+    private DisposableSingleObserver<GithubAuth> getLoginObserver() {
+        return new DisposableSingleObserver<GithubAuth>() {
             @Override
-            public void onSuccess(List<GithubRepos> value) {
-                showProgress(false);
-
-                if (!value.isEmpty()) {
-                    Intent intent = new Intent(LoginActivity.this, ItemListActivity.class);
-                    // список репозиториев передаем через intent, как вариант можно сохранить в globalData
-                    intent.putExtra("listRepos", (Serializable) value);
-                    startActivity(intent);
-                    // текущая активити больше ненужна
-                    finish();
-                } else {
-                    // нет доступных репозиториев
-                    Toast.makeText(LoginActivity.this, "Нет доступных для отображения репозиториев.", Toast.LENGTH_SHORT).show();
+            public void onSuccess(GithubAuth value) {
+                // проставим флаг, что приложение авторизовано
+                PrefUtilis.setAuthenticated(LoginActivity.this, 1);
+                // токен приходит только при первой авторизации
+                if (!value.getToken().isEmpty()) {
+                    PrefUtilis.setOAuthToken(LoginActivity.this, value.getToken());
                 }
+
+                // запрашиваем список репозиториев
+                getRepo();
             }
 
             @Override
             public void onError(Throwable e) {
                 showProgress(false);
                 e.printStackTrace();
-                // TODO разделить отсутствие доступа к сети(broadcast) и не корректные данные авторизации
-                Toast.makeText(LoginActivity.this, "Ошибка при подключении к серверу. Проверьте данные авторизации или настройки подключения.", Toast.LENGTH_SHORT).show();
+                Toast.makeText(LoginActivity.this, "Неверный логин или пароль.", Toast.LENGTH_SHORT).show();
+            }
+        };
+    }
+
+    private DisposableSingleObserver<List<GithubRepos>> getRepositoriesObserver() {
+        return new DisposableSingleObserver<List<GithubRepos>>() {
+            @Override
+            public void onSuccess(List<GithubRepos> value) {
+                Intent intent = new Intent(LoginActivity.this, ItemListActivity.class);
+                intent.putExtra("listRepos", (Serializable) value);
+                startActivity(intent);
+                // текущая активити больше ненужна
+                finish();
+            }
+
+            @Override
+            public void onError(Throwable e) {
+                e.printStackTrace();
+                showProgress(false);
+                Toast.makeText(LoginActivity.this, "Ошибка при загрузке списка репозиториев.", Toast.LENGTH_SHORT).show();
             }
         };
     }

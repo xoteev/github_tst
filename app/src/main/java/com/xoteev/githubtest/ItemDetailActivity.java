@@ -26,7 +26,7 @@ public class ItemDetailActivity extends AppCompatActivity {
         fab.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                Snackbar.make(view, "Info about repo in progres...", Snackbar.LENGTH_LONG)
+                Snackbar.make(view, "Информация о репозитории в разработке...", Snackbar.LENGTH_LONG)
                         .setAction("Action", null).show();
             }
         });
